@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vendas — Painel de Licenças</title>
+<style>
+  :root{ --brand:#1b5e37; --brand-dark:#0e3d22; --bg:#f5f6f8; --ink:#1f2430; --ink-soft:#5b6270; }
+  *{box-sizing:border-box;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:24px;}
+  h1{color:var(--brand-dark);margin:0 0 4px;}
+  .sub{color:var(--ink-soft);margin:0 0 24px;}
+  .card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:20px;}
+  label{display:block;font-size:13px;color:var(--ink-soft);margin-bottom:4px;}
+  input,select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;}
+  button{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer;}
+  button:hover{background:var(--brand-dark);}
+  button.ghost{background:none;color:var(--brand-dark);border:1px solid var(--brand);}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eee;}
+  th{color:var(--ink-soft);font-weight:600;}
+  .status-ativa{color:#1b5e37;font-weight:600;}
+  .status-suspensa{color:#b3201f;font-weight:600;}
+  .status-cancelada{color:#8a8f98;font-weight:600;}
+  .chave{font-family:monospace;background:#f0f2f4;padding:2px 6px;border-radius:4px;}
+  .row{display:flex;gap:10px;align-items:flex-end;}
+  .row > div{flex:1;}
+  .msg{font-size:13px;margin-top:8px;}
+  .msg.erro{color:#b3201f;}
+  .msg.ok{color:#1b5e37;}
+  .grid-form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end;}
+  .actions button{margin-right:6px;margin-bottom:4px;}
+</style>
+</head>
+<body>
+
+<h1>Painel de Licenças — Vendas</h1>
+<p class="sub">Cadastre empresas clientes, gere a chave de licença de cada uma e controle quem tem acesso ativo.</p>
+
+<div class="card" id="loginCard">
+  <label for="tokenInput">Token de administrador</label>
+  <input type="password" id="tokenInput" placeholder="Cole aqui o token de administrador (ADMIN_TOKEN do servidor)">
+  <button id="entrarBtn">Entrar</button>
+  <div class="msg erro" id="loginMsg"></div>
+</div>
+
+<div id="painel" style="display:none;">
+
+  <div class="card">
+    <h3 style="margin-top:0;">Nova empresa cliente</h3>
+    <div class="grid-form">
+      <div>
+        <label>Nome da empresa</label>
+        <input type="text" id="novoNome" placeholder="Ex: Agropecuária Boi Forte">
+      </div>
+      <div>
+        <label>Limite de aparelhos (opcional)</label>
+        <input type="number" id="novoLimite" placeholder="Sem limite" min="1">
+      </div>
+      <div>
+        <label>Vencimento (opcional)</label>
+        <input type="date" id="novoVencimento">
+      </div>
+      <div>
+        <button id="criarBtn">Criar</button>
+      </div>
+    </div>
+    <div class="msg" id="criarMsg"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Empresas cadastradas</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Empresa</th>
+          <th>Chave de licença</th>
+          <th>Status</th>
+          <th>Aparelhos</th>
+          <th>Vencimento</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="tabelaEmpresas"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+let TOKEN = "";
+
+function fmtData(iso){
+  if(!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleDateString('pt-BR');
+}
+
+async function api(path, opts = {}){
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", "x-admin-token": TOKEN, ...(opts.headers||{}) },
+  });
+  if(!res.ok){
+    const body = await res.json().catch(()=>({erro:"Erro desconhecido"}));
+    throw new Error(body.erro || `Erro ${res.status}`);
+  }
+  if(res.status === 204) return null;
+  return res.json();
+}
+
+async function carregarEmpresas(){
+  const lista = await api("/api/admin/empresas");
+  const tbody = document.getElementById("tabelaEmpresas");
+  if(lista.length === 0){
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#5b6270;">Nenhuma empresa cadastrada ainda.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = lista.map(e => `
+    <tr>
+      <td>${e.nome}</td>
+      <td><span class="chave">${e.chave_licenca}</span> <button class="ghost" onclick="copiarChave('${e.chave_licenca}')" style="padding:2px 8px;font-size:12px;">copiar</button></td>
+      <td><span class="status-${e.status}">${e.status}</span></td>
+      <td>${e.dispositivos_count}${e.max_dispositivos ? ' / ' + e.max_dispositivos : ''}</td>
+      <td>${fmtData(e.expira_em)}</td>
+      <td class="actions">
+        ${e.status !== 'ativa' ? `<button onclick="mudarStatus(${e.id}, 'ativa')">Ativar</button>` : ''}
+        ${e.status !== 'suspensa' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'suspensa')">Suspender</button>` : ''}
+        ${e.status !== 'cancelada' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'cancelada')">Cancelar</button>` : ''}
+        <button class="ghost" onclick="regenerarChave(${e.id})">Gerar nova chave</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function copiarChave(chave){
+  navigator.clipboard.writeText(chave).then(()=>alert("Chave copiada: " + chave));
+}
+
+async function mudarStatus(id, status){
+  if(status !== 'ativa' && !confirm(`Confirma mudar para "${status}"? O acesso dos aparelhos dessa empresa será bloqueado na próxima verificação.`)) return;
+  await api(`/api/admin/empresas/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
+  carregarEmpresas();
+}
+
+async function regenerarChave(id){
+  if(!confirm("Gerar uma nova chave invalida a chave atual — a empresa vai precisar da chave nova para ativar em qualquer aparelho novo. Continuar?")) return;
+  const empresa = await api(`/api/admin/empresas/${id}/regenerar-chave`, { method: "POST" });
+  alert("Nova chave gerada: " + empresa.chave_licenca);
+  carregarEmpresas();
+}
+
+document.getElementById("entrarBtn").addEventListener("click", async () => {
+  TOKEN = document.getElementById("tokenInput").value.trim();
+  const msg = document.getElementById("loginMsg");
+  msg.textContent = "";
+  try {
+    await carregarEmpresas();
+    document.getElementById("loginCard").style.display = "none";
+    document.getElementById("painel").style.display = "";
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+});
+
+document.getElementById("criarBtn").addEventListener("click", async () => {
+  const nome = document.getElementById("novoNome").value.trim();
+  const limite = document.getElementById("novoLimite").value;
+  const vencimento = document.getElementById("novoVencimento").value;
+  const msg = document.getElementById("criarMsg");
+  msg.className = "msg";
+  msg.textContent = "";
+  if(!nome){ msg.className = "msg erro"; msg.textContent = "Digite o nome da empresa."; return; }
+  try {
+    const empresa = await api("/api/admin/empresas", {
+      method: "POST",
+      body: JSON.stringify({
+        nome,
+        max_dispositivos: limite ? Number(limite) : null,
+        expira_em: vencimento || null,
+      }),
+    });
+    msg.className = "msg ok";
+    msg.textContent = `Empresa criada. Chave de licença: ${empresa.chave_licenca}`;
+    document.getElementById("novoNome").value = "";
+    document.getElementById("novoLimite").value = "";
+    document.getElementById("novoVencimento").value = "";
+    carregarEmpresas();
+  } catch (e) {
+    msg.className = "msg erro";
+    msg.textContent = e.message;
+  }
+});
+</script>
+
+</body>
+</html>
