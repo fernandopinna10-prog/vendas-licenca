@@ -75,6 +75,13 @@ app.get("/api/admin/empresas/:id/dispositivos", checarAdmin, (req, res) => {
 // e conversa com as rotas acima via fetch.
 app.use("/admin", express.static(path.join(__dirname, "public")));
 
+// Cópias hospedadas do app "Vendas" para cada cliente — cada uma é o arquivo
+// gerado no Editor (já com a chave de licença daquele cliente embutida),
+// subida em public/app/<nome-do-cliente>/index.html. Hospedar assim (em vez
+// de mandar o arquivo solto) permite que o celular do cliente reconheça o
+// app como instalável de verdade, com ícone próprio na tela inicial.
+app.use("/app", express.static(path.join(__dirname, "public", "app")));
+
 app.get("/", (req, res) => {
   res.type("text/plain").send("Vendas — API de licenciamento no ar. Painel em /admin");
 });
