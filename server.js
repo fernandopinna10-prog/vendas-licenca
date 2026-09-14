@@ -32,6 +32,20 @@ app.post("/api/validar-licenca", (req, res) => {
 });
 
 // ---------------------------------------------------------------------
+// Rota pública — recebe os contatos da página de captação de clientes
+// (public/captacao.html). Qualquer pessoa que preencher o formulário cai
+// aqui; não exige token de admin, senão o formulário público não funcionaria.
+// ---------------------------------------------------------------------
+app.post("/api/leads", (req, res) => {
+  const { nome, telefone, cidade, tipoCriacao, interesse, quantidade, mensagem, origem } = req.body || {};
+  if (!nome || !telefone) {
+    return res.status(400).json({ erro: "Informe ao menos nome e telefone." });
+  }
+  const lead = db.criarLead({ nome, telefone, cidade, tipoCriacao, interesse, quantidade, mensagem, origem });
+  res.status(201).json({ ok: true, id: lead.id });
+});
+
+// ---------------------------------------------------------------------
 // Rotas administrativas — protegidas por token simples (cabeçalho
 // x-admin-token). Fase 1 não tem login de verdade ainda; isso chega na
 // Fase 3 (painel administrativo completo).
@@ -71,6 +85,22 @@ app.get("/api/admin/empresas/:id/dispositivos", checarAdmin, (req, res) => {
   res.json(db.listarDispositivos(req.params.id));
 });
 
+app.get("/api/admin/leads", checarAdmin, (req, res) => {
+  res.json(db.listarLeads());
+});
+
+app.patch("/api/admin/leads/:id", checarAdmin, (req, res) => {
+  const lead = db.atualizarLead(req.params.id, req.body || {});
+  if (!lead) return res.status(404).json({ erro: "Lead não encontrado." });
+  res.json(lead);
+});
+
+app.delete("/api/admin/leads/:id", checarAdmin, (req, res) => {
+  const ok = db.removerLead(req.params.id);
+  if (!ok) return res.status(404).json({ erro: "Lead não encontrado." });
+  res.status(204).send();
+});
+
 // Painel administrativo simples (HTML estático) — pede o token de admin
 // e conversa com as rotas acima via fetch.
 app.use("/admin", express.static(path.join(__dirname, "public")));
@@ -81,6 +111,18 @@ app.use("/admin", express.static(path.join(__dirname, "public")));
 // de mandar o arquivo solto) permite que o celular do cliente reconheça o
 // app como instalável de verdade, com ícone próprio na tela inicial.
 app.use("/app", express.static(path.join(__dirname, "public", "app")));
+
+// PDFs dos materiais técnicos (catálogos) exibidos dentro do app Vendas em
+// "Meu Desempenho" — o app guarda só o link (public/materiais/<arquivo>.pdf),
+// então basta trocar o arquivo aqui e o link continua funcionando.
+app.use("/materiais", express.static(path.join(__dirname, "public", "materiais")));
+
+// Página pública de captação de clientes (formulário de leads) — link para
+// divulgar no WhatsApp/Instagram/etc. Sem token, sem login: qualquer visitante
+// pode abrir e preencher.
+app.get("/captacao", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "captacao.html"));
+});
 
 app.get("/", (req, res) => {
   res.type("text/plain").send("Vendas — API de licenciamento no ar. Painel em /admin");
