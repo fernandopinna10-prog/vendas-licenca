@@ -1,30 +1,74 @@
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const crypto = require("crypto");
 const db = require("./db");
 
 const app = express();
+app.set("trust proxy", 1); // atrás do proxy do Render: usa o IP real do visitante
 app.use(cors());
-app.use(express.json());
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "troque-este-token-admin";
+// Corpo das requisições: pequeno em geral; a tabela de preços (admin) pode ser maior.
+app.use((req, res, next) => {
+  const limite = req.path === "/api/admin/tabela" ? "6mb" : "50kb";
+  express.json({ limit: limite })(req, res, next);
+});
+
+// A senha do painel vem SÓ da variável de ambiente ADMIN_TOKEN (configurada no Render).
+// Sem ela, as rotas de administrador ficam desligadas — nunca há uma senha padrão.
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const PORT = process.env.PORT || 3000;
 
+function hashar(t) {
+  return crypto.createHash("sha256").update(String(t)).digest();
+}
+
 function checarAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) {
+    return res.status(503).json({ erro: "Painel desligado: defina ADMIN_TOKEN no servidor." });
+  }
   const token = req.headers["x-admin-token"];
-  if (!token || token !== ADMIN_TOKEN) {
+  if (!token || !crypto.timingSafeEqual(hashar(token), hashar(ADMIN_TOKEN))) {
     return res.status(401).json({ erro: "Token de administrador inválido." });
   }
   next();
+}
+
+// Limitador simples por IP (em memória): protege contra tentativas repetidas.
+function limitar(max, janelaMs) {
+  const mapa = new Map();
+  setInterval(() => {
+    const agora = Date.now();
+    for (const [ip, v] of mapa) if (v.fim < agora) mapa.delete(ip);
+  }, janelaMs).unref();
+  return (req, res, next) => {
+    const agora = Date.now();
+    let v = mapa.get(req.ip);
+    if (!v || v.fim < agora) {
+      v = { n: 0, fim: agora + janelaMs };
+      mapa.set(req.ip, v);
+    }
+    v.n++;
+    if (v.n > max) {
+      return res.status(429).json({ valido: false, erro: "Muitas tentativas. Aguarde um pouco e tente de novo.", motivo: "Muitas tentativas. Aguarde um pouco e tente de novo." });
+    }
+    next();
+  };
+}
+const limiteLicenca = limitar(60, 60 * 1000);
+const limiteLeads = limitar(8, 10 * 60 * 1000);
+
+function textoCurto(v, n) {
+  return typeof v === "string" && v.length > 0 && v.length <= n;
 }
 
 // ---------------------------------------------------------------------
 // Rota pública — é essa que o app Vendas chama ao abrir, pra conferir se
 // a licença da empresa está ativa antes de liberar o uso.
 // ---------------------------------------------------------------------
-app.post("/api/validar-licenca", (req, res) => {
+app.post("/api/validar-licenca", limiteLicenca, (req, res) => {
   const { chave, deviceId } = req.body || {};
-  if (!chave || !deviceId) {
+  if (!textoCurto(chave, 64) || !textoCurto(deviceId, 64)) {
     return res.status(400).json({ valido: false, motivo: "Faltou a chave de licença ou o identificador do aparelho." });
   }
   const resultado = db.registrarAcesso(chave, deviceId);
@@ -32,11 +76,32 @@ app.post("/api/validar-licenca", (req, res) => {
 });
 
 // ---------------------------------------------------------------------
-// Rota pública — recebe os contatos da página de captação de clientes
-// (public/captacao.html). Qualquer pessoa que preencher o formulário cai
-// aqui; não exige token de admin, senão o formulário público não funcionaria.
+// Tabela de preços — só é entregue para licença ativa (mesma checagem acima).
+// O arquivo do app, sozinho, não traz preço nenhum.
 // ---------------------------------------------------------------------
-app.post("/api/leads", (req, res) => {
+app.post("/api/tabela", limiteLicenca, (req, res) => {
+  const { chave, deviceId } = req.body || {};
+  if (!textoCurto(chave, 64) || !textoCurto(deviceId, 64)) {
+    return res.status(400).json({ valido: false, motivo: "Faltou a chave de licença ou o identificador do aparelho." });
+  }
+  const r = db.registrarAcesso(chave, deviceId);
+  if (!r.permitido) {
+    return res.status(403).json({ valido: false, motivo: r.motivo });
+  }
+  const tabela = db.lerTabela();
+  if (!tabela) {
+    return res.status(404).json({ valido: true, motivo: "A tabela de preços ainda não foi publicada no servidor." });
+  }
+  res.set("Cache-Control", "no-store");
+  res.json(tabela);
+});
+
+// ---------------------------------------------------------------------
+// Rota pública — recebe os contatos da página de captação de clientes
+// (public/captacao.html). Não exige token de admin, senão o formulário
+// público não funciona. Tem limite de envios por IP contra spam.
+// ---------------------------------------------------------------------
+app.post("/api/leads", limiteLeads, (req, res) => {
   const { nome, telefone, cidade, tipoCriacao, interesse, quantidade, mensagem, origem } = req.body || {};
   if (!nome || !telefone) {
     return res.status(400).json({ erro: "Informe ao menos nome e telefone." });
@@ -46,9 +111,7 @@ app.post("/api/leads", (req, res) => {
 });
 
 // ---------------------------------------------------------------------
-// Rotas administrativas — protegidas por token simples (cabeçalho
-// x-admin-token). Fase 1 não tem login de verdade ainda; isso chega na
-// Fase 3 (painel administrativo completo).
+// Rotas administrativas — protegidas por token (cabeçalho x-admin-token).
 // ---------------------------------------------------------------------
 app.get("/api/admin/empresas", checarAdmin, (req, res) => {
   res.json(db.listarEmpresas());
@@ -85,6 +148,13 @@ app.get("/api/admin/empresas/:id/dispositivos", checarAdmin, (req, res) => {
   res.json(db.listarDispositivos(req.params.id));
 });
 
+// Libera uma vaga de aparelho (ex.: o vendedor trocou de celular).
+app.delete("/api/admin/empresas/:id/dispositivos/:did", checarAdmin, (req, res) => {
+  const ok = db.removerDispositivo(req.params.id, req.params.did);
+  if (!ok) return res.status(404).json({ erro: "Aparelho não encontrado." });
+  res.status(204).send();
+});
+
 app.get("/api/admin/leads", checarAdmin, (req, res) => {
   res.json(db.listarLeads());
 });
@@ -99,6 +169,29 @@ app.delete("/api/admin/leads/:id", checarAdmin, (req, res) => {
   const ok = db.removerLead(req.params.id);
   if (!ok) return res.status(404).json({ erro: "Lead não encontrado." });
   res.status(204).send();
+});
+
+// Tabela de preços: ver qual versão está publicada e publicar uma nova.
+app.get("/api/admin/tabela", checarAdmin, (req, res) => {
+  res.json(db.metaTabela());
+});
+
+app.put("/api/admin/tabela", checarAdmin, (req, res) => {
+  const r = db.salvarTabela(req.body);
+  if (!r.ok) return res.status(400).json({ erro: "Tabela recusada: " + r.erro + "." });
+  res.json(r.meta);
+});
+
+// Tratamento de erro: corpo inválido ou grande demais, ou falha ao ler o banco.
+app.use((err, req, res, next) => {
+  if (err && (err.type === "entity.too.large" || err.status === 413)) {
+    return res.status(413).json({ erro: "Arquivo grande demais." });
+  }
+  if (err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ erro: "JSON inválido." });
+  }
+  console.error(err);
+  res.status(500).json({ erro: "Erro interno no servidor." });
 });
 
 // Painel administrativo simples (HTML estático) — pede o token de admin
@@ -130,4 +223,5 @@ app.get("/", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`API de licenciamento rodando na porta ${PORT}`);
+  if (!ADMIN_TOKEN) console.warn("ATENÇÃO: ADMIN_TOKEN não definido — rotas de administrador desligadas.");
 });
