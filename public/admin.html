@@ -16,6 +16,8 @@
   button{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer;}
   button:hover{background:var(--brand-dark);}
   button.ghost{background:none;color:var(--brand-dark);border:1px solid var(--brand);}
+  button.danger{background:#b3201f;}
+  button.danger:hover{background:#8a1716;}
   table{width:100%;border-collapse:collapse;font-size:14px;}
   th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eee;}
   th{color:var(--ink-soft);font-weight:600;}
@@ -28,6 +30,7 @@
   .msg{font-size:13px;margin-top:8px;}
   .msg.erro{color:#b3201f;}
   .msg.ok{color:#1b5e37;}
+  .mini{font-size:12px;color:var(--ink-soft);}
   .grid-form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end;}
   .actions button{margin-right:6px;margin-bottom:4px;}
 </style>
@@ -85,15 +88,38 @@
     </table>
   </div>
 
+  <div class="card" id="aparelhosCard" style="display:none;">
+    <h3 style="margin-top:0;" id="aparelhosTitulo">Aparelhos</h3>
+    <p class="mini">Use <b>Liberar</b> quando o vendedor trocar de celular: a vaga fica livre para o aparelho novo. O aparelho liberado perde o acesso na próxima abertura do app, a não ser que a vaga seja ocupada de novo por ele.</p>
+    <table>
+      <thead>
+        <tr><th>Aparelho</th><th>Primeiro acesso</th><th>Último acesso</th><th></th></tr>
+      </thead>
+      <tbody id="tabelaAparelhos"></tbody>
+    </table>
+    <button class="ghost" id="fecharAparelhosBtn" style="margin-top:12px;">Fechar</button>
+  </div>
+
 </div>
 
 <script>
 let TOKEN = "";
+let EMPRESAS = [];
+let EMPRESA_APARELHOS = null;
+
+function esc(t){
+  return String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
 
 function fmtData(iso){
   if(!iso) return "—";
   const d = new Date(iso);
   return d.toLocaleDateString('pt-BR');
+}
+
+function fmtDataHora(iso){
+  if(!iso) return "—";
+  return new Date(iso).toLocaleString('pt-BR');
 }
 
 async function api(path, opts = {}){
@@ -111,6 +137,7 @@ async function api(path, opts = {}){
 
 async function carregarEmpresas(){
   const lista = await api("/api/admin/empresas");
+  EMPRESAS = lista;
   const tbody = document.getElementById("tabelaEmpresas");
   if(lista.length === 0){
     tbody.innerHTML = '<tr><td colspan="6" style="color:#5b6270;">Nenhuma empresa cadastrada ainda.</td></tr>';
@@ -118,15 +145,16 @@ async function carregarEmpresas(){
   }
   tbody.innerHTML = lista.map(e => `
     <tr>
-      <td>${e.nome}</td>
-      <td><span class="chave">${e.chave_licenca}</span> <button class="ghost" onclick="copiarChave('${e.chave_licenca}')" style="padding:2px 8px;font-size:12px;">copiar</button></td>
-      <td><span class="status-${e.status}">${e.status}</span></td>
+      <td>${esc(e.nome)}</td>
+      <td><span class="chave">${esc(e.chave_licenca)}</span> <button class="ghost" onclick="copiarChave('${esc(e.chave_licenca)}')" style="padding:2px 8px;font-size:12px;">copiar</button></td>
+      <td><span class="status-${esc(e.status)}">${esc(e.status)}</span></td>
       <td>${e.dispositivos_count}${e.max_dispositivos ? ' / ' + e.max_dispositivos : ''}</td>
       <td>${fmtData(e.expira_em)}</td>
       <td class="actions">
         ${e.status !== 'ativa' ? `<button onclick="mudarStatus(${e.id}, 'ativa')">Ativar</button>` : ''}
         ${e.status !== 'suspensa' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'suspensa')">Suspender</button>` : ''}
         ${e.status !== 'cancelada' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'cancelada')">Cancelar</button>` : ''}
+        <button class="ghost" onclick="verAparelhos(${e.id})">Aparelhos</button>
         <button class="ghost" onclick="regenerarChave(${e.id})">Gerar nova chave</button>
       </td>
     </tr>
@@ -149,6 +177,46 @@ async function regenerarChave(id){
   alert("Nova chave gerada: " + empresa.chave_licenca);
   carregarEmpresas();
 }
+
+async function verAparelhos(id){
+  const emp = EMPRESAS.find(e => e.id === id);
+  EMPRESA_APARELHOS = id;
+  let lista;
+  try{
+    lista = await api(`/api/admin/empresas/${id}/dispositivos`);
+  }catch(e){ alert(e.message); return; }
+  document.getElementById("aparelhosTitulo").textContent = "Aparelhos — " + (emp ? emp.nome : "");
+  const tb = document.getElementById("tabelaAparelhos");
+  if(lista.length === 0){
+    tb.innerHTML = '<tr><td colspan="4" style="color:#5b6270;">Nenhum aparelho registrado.</td></tr>';
+  } else {
+    tb.innerHTML = lista.map((d, i) => `
+      <tr>
+        <td>Aparelho ${i + 1} <span class="mini">(${esc(String(d.device_id).slice(0, 8))}…)</span></td>
+        <td>${fmtDataHora(d.primeiro_acesso)}</td>
+        <td>${fmtDataHora(d.ultimo_acesso)}</td>
+        <td><button class="danger" onclick="liberarAparelho(${id}, ${d.id})">Liberar</button></td>
+      </tr>
+    `).join("");
+  }
+  const card = document.getElementById("aparelhosCard");
+  card.style.display = "";
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function liberarAparelho(empresaId, did){
+  if(!confirm("Liberar este aparelho? Ele perde o acesso e a vaga fica livre para outro aparelho.")) return;
+  try{
+    await api(`/api/admin/empresas/${empresaId}/dispositivos/${did}`, { method: "DELETE" });
+  }catch(e){ alert(e.message); return; }
+  await carregarEmpresas();
+  await verAparelhos(empresaId);
+}
+
+document.getElementById("fecharAparelhosBtn").addEventListener("click", () => {
+  document.getElementById("aparelhosCard").style.display = "none";
+  EMPRESA_APARELHOS = null;
+});
 
 document.getElementById("entrarBtn").addEventListener("click", async () => {
   TOKEN = document.getElementById("tokenInput").value.trim();
