@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabela de preços — publicar</title>
+<style>
+  :root{--bg:#f6f4f1;--card:#fff;--ink:#222;--soft:#666;--brand:#e8710a;--ok:#1a7f37;--err:#b42318;--line:#e3ded8}
+  @media (prefers-color-scheme: dark){:root{--bg:#1b1a19;--card:#262524;--ink:#f1efec;--soft:#a9a49e;--line:#3a3836}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
+  main{max-width:560px;margin:0 auto}
+  h1{font-size:22px;margin:8px 0 4px}
+  p.sub{color:var(--soft);margin:0 0 16px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  label{display:block;font-size:13px;color:var(--soft);margin:0 0 6px}
+  input[type=password],input[type=file]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font-size:15px}
+  button{width:100%;margin-top:12px;padding:12px;border:0;border-radius:8px;background:var(--brand);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+  button.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  button:disabled{opacity:.5;cursor:default}
+  .msg{margin-top:12px;font-size:14px;white-space:pre-wrap}
+  .ok{color:var(--ok)} .err{color:var(--err)}
+  dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+  dt{color:var(--soft)} dd{margin:0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Tabela de preços</h1>
+  <p class="sub">Publique o dados.json gerado no Editor do App. Os vendedores recebem a tabela nova ao abrir o App.</p>
+
+  <div class="card">
+    <label for="tok">Token de administrador</label>
+    <input type="password" id="tok" autocomplete="off" placeholder="o mesmo do painel">
+    <button class="sec" id="ver">Ver tabela publicada</button>
+    <div id="atual" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <label for="arq">Arquivo dados.json</label>
+    <input type="file" id="arq" accept=".json,application/json">
+    <div id="previa" class="msg"></div>
+    <button id="enviar" disabled>Publicar tabela</button>
+    <div id="res" class="msg"></div>
+  </div>
+</main>
+<script>
+(function(){
+  var tok = document.getElementById('tok'), ver = document.getElementById('ver'), atual = document.getElementById('atual');
+  var arq = document.getElementById('arq'), previa = document.getElementById('previa'), enviar = document.getElementById('enviar'), res = document.getElementById('res');
+  var conteudo = null;
+  function fmt(iso){ var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(iso||''); return m? m[3]+'/'+m[2]+'/'+m[1] : '—'; }
+  function setMsg(el, txt, cls){ el.textContent = txt; el.className = 'msg ' + (cls||''); }
+  function mostrar(m){
+    if(!m.existe){ setMsg(atual, 'Nenhuma tabela publicada ainda.'); return; }
+    atual.className='msg'; atual.innerHTML='';
+    var dl=document.createElement('dl');
+    [['Nome',m.titulo||'—'],['Versão',m.versao],['Vigente desde',fmt(m.vigenteDesde)],['Produtos',m.produtos],['Publicada em',new Date(m.atualizadoEm).toLocaleString('pt-BR')]].forEach(function(p){
+      var dt=document.createElement('dt'); dt.textContent=p[0]; var dd=document.createElement('dd'); dd.textContent=p[1]; dl.appendChild(dt); dl.appendChild(dd);
+    });
+    atual.appendChild(dl);
+  }
+  function chamar(metodo, corpo){
+    return fetch('/api/admin/tabela', {method:metodo, headers:{'Content-Type':'application/json','x-admin-token':tok.value}, body: corpo}).then(function(r){
+      return r.json().catch(function(){return {};}).then(function(j){ return {ok:r.ok, status:r.status, j:j}; });
+    });
+  }
+  ver.addEventListener('click', function(){
+    if(!tok.value){ setMsg(atual,'Digite o token de administrador.','err'); return; }
+    chamar('GET').then(function(r){
+      if(r.status===401){ setMsg(atual,'Token inválido.','err'); return; }
+      if(!r.ok){ setMsg(atual,(r.j&&r.j.erro)||'Erro ao consultar.','err'); return; }
+      mostrar(r.j);
+    }).catch(function(){ setMsg(atual,'Sem conexão com o servidor.','err'); });
+  });
+  arq.addEventListener('change', function(){
+    conteudo = null; enviar.disabled = true; setMsg(res,''); setMsg(previa,'');
+    var f = arq.files[0]; if(!f) return;
+    var rd = new FileReader();
+    rd.onload = function(){
+      try{
+        var d = JSON.parse(rd.result);
+        if(!d || !Array.isArray(d.produtos)) throw new Error('não parece um dados.json do App');
+        conteudo = rd.result;
+        setMsg(previa, 'Pronto para publicar: ' + (d.titulo||'tabela') + ' · versão ' + d.versao + ' · ' + d.produtos.length + ' produtos.');
+        enviar.disabled = false;
+      }catch(e){ setMsg(previa,'Arquivo inválido: ' + e.message, 'err'); }
+    };
+    rd.readAsText(f, 'UTF-8');
+  });
+  enviar.addEventListener('click', function(){
+    if(!tok.value){ setMsg(res,'Digite o token de administrador.','err'); return; }
+    if(!conteudo) return;
+    enviar.disabled = true; setMsg(res,'Enviando…');
+    chamar('PUT', conteudo).then(function(r){
+      if(r.status===401){ setMsg(res,'Token inválido.','err'); }
+      else if(!r.ok){ setMsg(res,(r.j&&r.j.erro)||'Erro ao publicar.','err'); }
+      else { setMsg(res,'Tabela publicada. Os Apps recebem ao abrir.','ok'); mostrar(r.j); }
+      enviar.disabled = false;
+    }).catch(function(){ setMsg(res,'Sem conexão com o servidor.','err'); enviar.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>
