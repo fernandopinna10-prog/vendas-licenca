@@ -154,6 +154,7 @@ async function carregarEmpresas(){
         ${e.status !== 'ativa' ? `<button onclick="mudarStatus(${e.id}, 'ativa')">Ativar</button>` : ''}
         ${e.status !== 'suspensa' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'suspensa')">Suspender</button>` : ''}
         ${e.status !== 'cancelada' ? `<button class="ghost" onclick="mudarStatus(${e.id}, 'cancelada')">Cancelar</button>` : ''}
+        <button class="ghost" onclick="alterarVencimento(${e.id})">Vencimento</button>
         <button class="ghost" onclick="verAparelhos(${e.id})">Aparelhos</button>
         <button class="ghost" onclick="regenerarChave(${e.id})">Gerar nova chave</button>
       </td>
@@ -176,6 +177,40 @@ async function regenerarChave(id){
   const empresa = await api(`/api/admin/empresas/${id}/regenerar-chave`, { method: "POST" });
   alert("Nova chave gerada: " + empresa.chave_licenca);
   carregarEmpresas();
+}
+
+function dataParaBR(d){
+  return String(d.getDate()).padStart(2,"0") + "/" + String(d.getMonth()+1).padStart(2,"0") + "/" + d.getFullYear();
+}
+
+// Aceita dd/mm/aaaa, ou um número de dias a partir de hoje (ex.: 15), ou vazio = sem vencimento.
+async function alterarVencimento(id){
+  const emp = EMPRESAS.find(e => e.id === id);
+  const sugestao = new Date(); sugestao.setDate(sugestao.getDate() + 30);
+  const atual = emp && emp.expira_em ? fmtData(emp.expira_em) : "sem vencimento";
+  const resp = prompt(
+    `Vencimento atual: ${atual}\n\nDigite o novo vencimento no formato dd/mm/aaaa (ex.: ${dataParaBR(sugestao)}),\nou só o número de dias a partir de hoje (ex.: 30),\nou deixe em branco para ficar sem vencimento.`
+  );
+  if(resp === null) return;
+  const t = resp.trim();
+  let valor = null;
+  if(t !== ""){
+    let d;
+    if(/^\d{1,3}$/.test(t)){
+      d = new Date(); d.setDate(d.getDate() + Number(t));
+    } else {
+      const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if(!m){ alert("Data inválida. Use dd/mm/aaaa, por exemplo 30/11/2026."); return; }
+      d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      if(d.getMonth() !== Number(m[2]) - 1){ alert("Data inválida."); return; }
+    }
+    d.setHours(23, 59, 59, 0); // vale até o fim do dia escolhido
+    valor = d.toISOString();
+  }
+  try{
+    await api(`/api/admin/empresas/${id}`, { method: "PATCH", body: JSON.stringify({ expira_em: valor }) });
+  }catch(e){ alert(e.message); return; }
+  await carregarEmpresas();
 }
 
 async function verAparelhos(id){
@@ -245,7 +280,7 @@ document.getElementById("criarBtn").addEventListener("click", async () => {
       body: JSON.stringify({
         nome,
         max_dispositivos: limite ? Number(limite) : null,
-        expira_em: vencimento || null,
+        expira_em: vencimento ? new Date(vencimento + 'T23:59:59').toISOString() : null,
       }),
     });
     msg.className = "msg ok";
